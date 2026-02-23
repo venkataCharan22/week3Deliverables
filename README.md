@@ -44,3 +44,17 @@ streamlit run app.py
 ```
 
 Each project runs independently on its own Streamlit port. See individual README files for details.
+
+#Agentic RAG
+
+<img width="1728" height="1117" alt="image" src="https://github.com/user-attachments/assets/f16c4191-cf65-49da-a0f4-d73b85761118" />
+
+#MULTI Agent System
+
+<img width="1728" height="1117" alt="image" src="https://github.com/user-attachments/assets/fe6f99db-122f-4407-9000-0ba6e973ebd0" />
+
+#React Agent Studio
+
+<img width="1728" height="1117" alt="image" src="https://github.com/user-attachments/assets/cefab7ca-366e-4618-a065-c9ed52341cb1" />
+
+
