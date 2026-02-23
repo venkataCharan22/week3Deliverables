@@ -135,41 +135,81 @@ def supervisor_node(state: AgentState, model_name: str = "llama3") -> dict:
     llm, system_prompt = create_agent_chain(model_name, "supervisor")
     system_prompt = system_prompt.format(max_iter=state.get("max_iterations", 6))
 
-    context_parts = [f"TASK: {state['task']}"]
-    if state.get("research_output"):
-        context_parts.append(f"\nRESEARCH COMPLETED:\n{state['research_output'][:500]}...")
-    if state.get("draft_output"):
-        context_parts.append(f"\nDRAFT COMPLETED:\n{state['draft_output'][:500]}...")
-    if state.get("review_output"):
-        context_parts.append(f"\nREVIEW FEEDBACK:\n{state['review_output'][:500]}...")
-    context_parts.append(f"\nITERATION: {state.get('iteration', 0)} / {state.get('max_iterations', 6)}")
-
-    context = "\n".join(context_parts)
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=context),
-    ]
-
-    response = llm.invoke(messages)
-    response_text = response.content
-
-    # Parse the supervisor's decision
-    next_agent = "FINISH"
-    reason = "Max iterations reached"
-
-    next_match = re.search(r"NEXT:\s*(researcher|writer|reviewer|FINISH)", response_text, re.IGNORECASE)
-    reason_match = re.search(r"REASON:\s*(.+?)(?:\n|$)", response_text)
-
-    if next_match:
-        next_agent = next_match.group(1).lower()
-    if reason_match:
-        reason = reason_match.group(1).strip()
+    iteration = state.get("iteration", 0)
+    has_research = bool(state.get("research_output"))
+    has_draft = bool(state.get("draft_output"))
+    has_review = bool(state.get("review_output"))
 
     # Force FINISH if max iterations reached
-    iteration = state.get("iteration", 0)
     if iteration >= state.get("max_iterations", 6):
-        next_agent = "FINISH"
-        reason = "Maximum iterations reached, finalizing output"
+        return {
+            "current_agent": "FINISH",
+            "iteration": iteration + 1,
+            "agent_history": [{
+                "agent": "supervisor",
+                "action": "Delegating to: FINISH",
+                "reason": "Maximum iterations reached, finalizing output",
+                "iteration": iteration + 1,
+            }],
+            "status": "routing",
+        }
+
+    # Deterministic routing for clear workflow stages
+    # This ensures the full pipeline runs reliably with local LLMs
+    if not has_research:
+        next_agent = "researcher"
+        reason = "Starting with research - need to gather information first"
+    elif not has_draft:
+        next_agent = "writer"
+        reason = "Research complete - delegating to writer to create content"
+    elif not has_review:
+        next_agent = "reviewer"
+        reason = "Draft complete - sending to reviewer for quality check"
+    else:
+        # After first full cycle, use LLM to decide if revision is needed or done
+        context_parts = [f"TASK: {state['task']}"]
+        context_parts.append(f"\nRESEARCH COMPLETED:\n{state['research_output'][:500]}...")
+        context_parts.append(f"\nCURRENT DRAFT:\n{state['draft_output'][:500]}...")
+        context_parts.append(f"\nREVIEW FEEDBACK:\n{state['review_output'][:500]}...")
+        context_parts.append(f"\nITERATION: {iteration} / {state.get('max_iterations', 6)}")
+        context_parts.append("\nBased on the review feedback, decide: should the writer REVISE the draft, or is it good enough to FINISH?")
+
+        context = "\n".join(context_parts)
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=context),
+        ]
+
+        response = llm.invoke(messages)
+        response_text = response.content.lower()
+
+        # Parse decision - look for various patterns the LLM might use
+        reason = "Evaluating review feedback"
+        reason_match = re.search(r"REASON:\s*(.+?)(?:\n|$)", response.content, re.IGNORECASE)
+        if reason_match:
+            reason = reason_match.group(1).strip()
+
+        # Check if the review approves or the LLM says FINISH
+        review_text = state.get("review_output", "").lower()
+        review_approves = "approve" in review_text or "score" in review_text and any(
+            f"score: {s}" in review_text or f"score:{s}" in review_text
+            for s in ["7", "8", "9", "10"]
+        )
+
+        if "finish" in response_text or review_approves:
+            next_agent = "FINISH"
+            reason = "Review is satisfactory - finalizing output"
+        elif "writer" in response_text or "revise" in response_text:
+            next_agent = "writer"
+            reason = "Sending back to writer for revisions based on review"
+        else:
+            # Default: if review has "APPROVE", finish; otherwise revise once
+            if "approve" in review_text:
+                next_agent = "FINISH"
+                reason = "Reviewer approved the draft - finalizing"
+            else:
+                next_agent = "writer"
+                reason = "Review suggests improvements needed - revising draft"
 
     return {
         "current_agent": next_agent,

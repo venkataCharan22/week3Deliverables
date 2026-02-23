@@ -89,7 +89,7 @@ def text_analyzer(text: str) -> str:
 def web_search(query: str) -> str:
     """Search the web using DuckDuckGo."""
     try:
-        from duckduckgo_search import DDGS
+        from ddgs import DDGS
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=3))
         if not results:
@@ -99,7 +99,7 @@ def web_search(query: str) -> str:
             output.append(f"[{i}] {r['title']}\n    {r['body']}\n    Source: {r['href']}")
         return "\n\n".join(output)
     except ImportError:
-        return "Error: duckduckgo-search not installed. Run: pip install duckduckgo-search"
+        return "Error: ddgs not installed. Run: pip install ddgs"
     except Exception as e:
         return f"Search error: {str(e)}"
 
@@ -234,7 +234,8 @@ RULES:
 - Always start with "Thought:"
 - Only use one tool per step
 - After seeing an Observation, continue with another Thought
-- Give a Final Answer when you have enough information
+- Give a Final Answer as soon as you have enough information - do NOT call extra tools unnecessarily
+- If you already have a tool observation with the answer, go straight to Final Answer
 
 Question: {question}
 {scratchpad}"""
@@ -331,7 +332,9 @@ def reason_node(state: ReActState, llm=None, enabled_tools=None):
             action, action_input, enabled_tools or list(TOOL_REGISTRY.keys())
         )
         steps.append({"type": "observation", "content": tool_result})
-        new_scratchpad += f"\nObservation: {tool_result}\n"
+        # Truncate long observations in scratchpad to keep LLM context manageable
+        scratchpad_result = tool_result[:800] + "..." if len(tool_result) > 800 else tool_result
+        new_scratchpad += f"\nObservation: {scratchpad_result}\n"
 
         counts = dict(state.get("tool_calls_count", {}))
         counts[action] = counts.get(action, 0) + 1
@@ -354,12 +357,36 @@ def reason_node(state: ReActState, llm=None, enabled_tools=None):
     }
 
 
+def force_final_answer(state: ReActState, llm=None):
+    """Force a final answer when max iterations is reached."""
+    scratchpad = state.get("scratchpad", "")
+    question = state["question"]
+
+    prompt = f"""Based on the information gathered so far, provide a final answer.
+
+Question: {question}
+
+Information gathered:
+{scratchpad[-1500:]}
+
+Provide a concise, helpful Final Answer now."""
+
+    response = llm.invoke([HumanMessage(content=prompt)])
+    answer = response.content.strip()
+
+    return {
+        "reasoning_steps": [{"type": "answer", "content": answer}],
+        "final_answer": answer,
+        "iteration": state.get("iteration", 0) + 1,
+    }
+
+
 def should_continue(state: ReActState) -> str:
     """Decide whether to continue the reasoning loop."""
     if state.get("final_answer"):
         return "end"
     if state.get("iteration", 0) >= state.get("max_iterations", 10):
-        return "end"
+        return "force_answer"
     return "continue"
 
 
@@ -373,14 +400,19 @@ def create_react_agent(model_name="llama3", temperature=0.1, enabled_tools=None)
     def react_step(state):
         return reason_node(state, llm=llm, enabled_tools=enabled_tools)
 
+    def force_answer_step(state):
+        return force_final_answer(state, llm=llm)
+
     graph = StateGraph(ReActState)
     graph.add_node("reason", react_step)
+    graph.add_node("force_answer", force_answer_step)
     graph.set_entry_point("reason")
     graph.add_conditional_edges(
         "reason",
         should_continue,
-        {"continue": "reason", "end": END},
+        {"continue": "reason", "force_answer": "force_answer", "end": END},
     )
+    graph.add_edge("force_answer", END)
     return graph.compile()
 
 

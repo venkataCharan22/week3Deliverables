@@ -45,31 +45,32 @@ def create_rag_agent(model_name="llama3", vector_store=None):
     def route_question(state: RAGState) -> dict:
         """Decide if we need to retrieve documents or can answer directly."""
         question = state["question"]
+        q_lower = question.strip().lower().rstrip("!?.")
 
         has_docs = vector_store is not None and vector_store.has_documents()
-        prompt = f"""You are a routing agent. Analyze the user's question and decide the best approach.
-{"The knowledge base HAS documents uploaded. Prefer retrieval for any factual or knowledge question." if has_docs else "The knowledge base is empty."}
 
-Question: {question}
-
-ONLY respond with ROUTE: direct for simple greetings like "hello", "hi", "how are you".
-For ANY question asking about facts, topics, information, or knowledge, respond with: ROUTE: retrieve
-
-Respond with ONLY one line starting with ROUTE:"""
-
-        messages = [HumanMessage(content=prompt)]
-        response = llm.invoke(messages)
-
-        route = "retrieve"  # default to retrieval
-        if "ROUTE: direct" in response.content:
+        # Quick check for obvious greetings - skip LLM call for these
+        greetings = {"hello", "hi", "hey", "howdy", "greetings", "good morning",
+                     "good afternoon", "good evening", "how are you", "what's up",
+                     "whats up", "sup"}
+        if q_lower in greetings or (not has_docs and len(question.split()) <= 3):
             route = "direct"
+            reasoning = f"Detected greeting or simple query: '{question}'"
+        elif has_docs:
+            # If we have documents, default to retrieval for any real question
+            route = "retrieve"
+            reasoning = f"Knowledge base has documents - retrieving for: '{question}'"
+        else:
+            # No documents - answer directly
+            route = "direct"
+            reasoning = "Knowledge base is empty - answering from general knowledge"
 
         return {
             "route": route,
             "decision_log": [{
                 "node": "Route Question",
                 "decision": f"Route → {'Retrieve from docs' if route == 'retrieve' else 'Direct answer'}",
-                "reasoning": response.content.strip()[:200],
+                "reasoning": reasoning,
                 "color": "#3b82f6",
             }],
         }
@@ -138,11 +139,22 @@ Respond with ONLY one line starting with ROUTE:"""
                 }],
             }
 
+        # Use relevance scores from retrieval to pre-filter
+        scores = state.get("relevance_scores", [])
         relevant_docs = []
         grading_details = []
 
         for i, doc in enumerate(documents):
-            prompt = f"""You are a relevance grader. Assess if the document is relevant to the question.
+            # Check similarity score first (if available) - accept docs with score > 0.3
+            score = scores[i].get("score", 0) if i < len(scores) else 0
+
+            if score >= 0.5:
+                # High similarity - accept without LLM call
+                relevant_docs.append(doc)
+                grading_details.append(f"Doc {i+1}: Relevant ✓ (score: {score:.2f})")
+            elif score >= 0.2:
+                # Medium similarity - use LLM to verify
+                prompt = f"""You are a relevance grader. Assess if the document is relevant to the question.
 
 Question: {question}
 
@@ -151,12 +163,14 @@ Document content:
 
 Is this document relevant to answering the question? Respond with ONLY 'yes' or 'no'."""
 
-            response = llm.invoke([HumanMessage(content=prompt)])
-            is_relevant = "yes" in response.content.lower()
+                response = llm.invoke([HumanMessage(content=prompt)])
+                is_relevant = "yes" in response.content.lower()
 
-            if is_relevant:
-                relevant_docs.append(doc)
-            grading_details.append(f"Doc {i+1}: {'Relevant ✓' if is_relevant else 'Not relevant ✗'}")
+                if is_relevant:
+                    relevant_docs.append(doc)
+                grading_details.append(f"Doc {i+1}: {'Relevant ✓' if is_relevant else 'Not relevant ✗'} (score: {score:.2f})")
+            else:
+                grading_details.append(f"Doc {i+1}: Not relevant ✗ (score: {score:.2f})")
 
         # Decide next step based on relevant docs
         if len(relevant_docs) >= 1:
