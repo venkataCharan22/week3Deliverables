@@ -5,8 +5,6 @@ Built with LangGraph, Ollama, and Streamlit
 
 import streamlit as st
 import json
-import time
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 from agent import (
     create_react_agent,
@@ -104,19 +102,6 @@ st.markdown("""
         color: #e2e8f0;
     }
 
-    .tool-card {
-        background: rgba(255, 255, 255, 0.03);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 10px;
-        padding: 0.7rem;
-        margin: 0.3rem 0;
-        transition: all 0.2s ease;
-    }
-    .tool-card:hover {
-        background: rgba(255, 255, 255, 0.06);
-        border-color: rgba(255, 255, 255, 0.15);
-    }
-
     .stats-card {
         background: rgba(255, 255, 255, 0.03);
         border: 1px solid rgba(255, 255, 255, 0.08);
@@ -138,35 +123,12 @@ st.markdown("""
         letter-spacing: 0.05em;
     }
 
-    .example-btn {
-        display: block;
-        width: 100%;
-        padding: 0.5rem 0.8rem;
-        margin: 0.3rem 0;
-        background: rgba(99, 102, 241, 0.1);
-        border: 1px solid rgba(99, 102, 241, 0.2);
-        border-radius: 8px;
-        color: #c7d2fe;
-        text-align: left;
-        font-size: 0.82rem;
-        cursor: pointer;
-        transition: all 0.2s;
-    }
-    .example-btn:hover {
-        background: rgba(99, 102, 241, 0.2);
-        border-color: rgba(99, 102, 241, 0.4);
-    }
-
     div[data-testid="stChatMessage"] {
         background: rgba(255, 255, 255, 0.02);
         border: 1px solid rgba(255, 255, 255, 0.05);
         border-radius: 12px;
         padding: 1rem;
         margin: 0.5rem 0;
-    }
-
-    .sidebar .sidebar-content {
-        background: rgba(15, 23, 42, 0.95);
     }
 
     section[data-testid="stSidebar"] > div {
@@ -177,7 +139,7 @@ st.markdown("""
 
 
 # ═══════════════════════════════════════════
-# SESSION STATE INITIALIZATION
+# SESSION STATE
 # ═══════════════════════════════════════════
 
 if "messages" not in st.session_state:
@@ -198,7 +160,6 @@ with st.sidebar:
     st.markdown("## ⚡ Agent Configuration")
     st.markdown("---")
 
-    # Connection status
     connected, available_models = check_ollama_connection()
     if connected:
         st.markdown(
@@ -212,19 +173,15 @@ with st.sidebar:
         )
         st.warning("Start Ollama to use the agent: `ollama serve`")
 
-    # Model selection
     model_options = available_models if available_models else ["llama3", "mistral"]
-    # Clean model names (remove :latest suffix for display)
     clean_models = list(dict.fromkeys([m.replace(":latest", "") for m in model_options]))
     selected_model = st.selectbox("🤖 Model", clean_models, index=0)
-
-    # Temperature
     temperature = st.slider("🌡️ Temperature", 0.0, 1.0, 0.1, 0.05)
+    max_steps = st.slider("🔄 Max Reasoning Steps", 3, 15, 8)
 
     st.markdown("---")
     st.markdown("### 🛠️ Tools")
 
-    # Tool toggles
     enabled_tools = []
     tools = get_available_tools()
     for tool_name, tool_info in tools.items():
@@ -236,18 +193,15 @@ with st.sidebar:
                 enabled_tools.append(tool_name)
 
     st.markdown("---")
-
-    # Example prompts
     st.markdown("### 💡 Try These")
     examples = [
         "What is sqrt(144) + 15 * 3?",
         "What's the current date and time?",
         "Search Wikipedia for quantum computing",
         "Analyze this text: The quick brown fox jumps over the lazy dog",
-        "Write Python code to generate the first 20 Fibonacci numbers",
+        "Write Python code to generate first 20 Fibonacci numbers",
         "Search the web for latest AI news",
     ]
-
     for ex in examples:
         if st.button(f"→ {ex}", key=f"ex_{ex}", use_container_width=True):
             st.session_state.pending_example = ex
@@ -275,28 +229,24 @@ st.markdown("""
 # Stats dashboard
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.markdown(f"""
-    <div class="stats-card">
+    st.markdown(f"""<div class="stats-card">
         <div class="stats-number">{st.session_state.total_queries}</div>
         <div class="stats-label">Total Queries</div>
     </div>""", unsafe_allow_html=True)
 with col2:
     total_tool_calls = sum(st.session_state.tool_usage_stats.values())
-    st.markdown(f"""
-    <div class="stats-card">
+    st.markdown(f"""<div class="stats-card">
         <div class="stats-number">{total_tool_calls}</div>
         <div class="stats-label">Tool Calls</div>
     </div>""", unsafe_allow_html=True)
 with col3:
-    st.markdown(f"""
-    <div class="stats-card">
+    st.markdown(f"""<div class="stats-card">
         <div class="stats-number">{len(enabled_tools)}</div>
         <div class="stats-label">Active Tools</div>
     </div>""", unsafe_allow_html=True)
 with col4:
     most_used = max(st.session_state.tool_usage_stats, key=st.session_state.tool_usage_stats.get) if st.session_state.tool_usage_stats else "—"
-    st.markdown(f"""
-    <div class="stats-card">
+    st.markdown(f"""<div class="stats-card">
         <div class="stats-number" style="font-size:1rem">{most_used}</div>
         <div class="stats-label">Most Used Tool</div>
     </div>""", unsafe_allow_html=True)
@@ -305,61 +255,33 @@ st.markdown("<br>", unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════
-# HELPER FUNCTIONS
+# HELPER: Display reasoning trace
 # ═══════════════════════════════════════════
 
-def extract_reasoning_trace(events):
-    """Extract the reasoning trace from LangGraph stream events."""
-    trace = []
-    for event in events:
-        for node_name, node_output in event.items():
-            if node_name == "agent":
-                msg = node_output["messages"][-1]
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    for tc in msg.tool_calls:
-                        trace.append({
-                            "type": "thought",
-                            "content": f"I need to use **{tc['name']}** to help answer this.",
-                        })
-                        trace.append({
-                            "type": "action",
-                            "tool": tc["name"],
-                            "input": json.dumps(tc["args"], indent=2) if isinstance(tc["args"], dict) else str(tc["args"]),
-                        })
-                elif hasattr(msg, "content") and msg.content:
-                    trace.append({
-                        "type": "answer",
-                        "content": msg.content,
-                    })
-            elif node_name == "tools":
-                msg = node_output["messages"][-1]
-                if hasattr(msg, "content"):
-                    trace.append({
-                        "type": "observation",
-                        "content": msg.content[:500],
-                    })
-    return trace
-
-
 def display_reasoning_trace(trace):
-    """Display the reasoning trace with styled components."""
-    for i, step in enumerate(trace):
+    """Render the reasoning chain with styled components."""
+    for step in trace:
         if step["type"] == "thought":
             st.markdown(
                 f'<div class="thought-step">💭 <strong>Thinking:</strong> {step["content"]}</div>',
                 unsafe_allow_html=True,
             )
         elif step["type"] == "action":
-            tool_icon = TOOL_REGISTRY.get(step.get("tool", ""), {}).get("icon", "🔧")
+            # Find the tool icon
+            tool_icon = "🔧"
+            for name, info in TOOL_REGISTRY.items():
+                if name.lower() in step.get("tool", "").lower() or step.get("tool", "").lower() in name.lower():
+                    tool_icon = info["icon"]
+                    break
             st.markdown(
-                f'<div class="action-step">{tool_icon} <strong>Action:</strong> Using <code>{step["tool"]}</code><br>'
+                f'<div class="action-step">{tool_icon} <strong>Action:</strong> {step["tool"]}<br>'
                 f'<pre style="margin-top:0.5rem;color:#fbbf24;font-size:0.82rem">{step["input"]}</pre></div>',
                 unsafe_allow_html=True,
             )
         elif step["type"] == "observation":
             content = step["content"]
-            if len(content) > 300:
-                content = content[:300] + "..."
+            if len(content) > 400:
+                content = content[:400] + "..."
             st.markdown(
                 f'<div class="observation-step">👁️ <strong>Observation:</strong><br>'
                 f'<pre style="margin-top:0.5rem;color:#34d399;font-size:0.82rem;white-space:pre-wrap">{content}</pre></div>',
@@ -380,12 +302,11 @@ def display_reasoning_trace(trace):
 for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        # Show reasoning trace if available
         if msg["role"] == "assistant" and str(i) in st.session_state.reasoning_traces:
             with st.expander("🔍 View Reasoning Chain", expanded=False):
                 display_reasoning_trace(st.session_state.reasoning_traces[str(i)])
 
-# Handle example prompts
+# Handle examples
 if "pending_example" in st.session_state:
     prompt = st.session_state.pending_example
     del st.session_state.pending_example
@@ -393,19 +314,17 @@ else:
     prompt = st.chat_input("Ask me anything... I can calculate, search, analyze, and more!")
 
 if prompt:
-    # Add user message
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Process with agent
     with st.chat_message("assistant"):
         if not connected:
             st.error("Ollama is not running. Please start it with `ollama serve`")
         elif not enabled_tools:
             st.warning("Please enable at least one tool in the sidebar.")
         else:
-            with st.status("🧠 Agent is thinking...", expanded=True) as status:
+            with st.status("🧠 Agent is reasoning...", expanded=True) as status:
                 try:
                     agent = create_react_agent(
                         model_name=selected_model,
@@ -413,64 +332,62 @@ if prompt:
                         enabled_tools=enabled_tools,
                     )
 
-                    # Collect all events
-                    events = []
-                    input_messages = [HumanMessage(content=prompt)]
+                    initial_state = {
+                        "question": prompt,
+                        "reasoning_steps": [],
+                        "tool_calls_count": {},
+                        "final_answer": "",
+                        "iteration": 0,
+                        "max_iterations": max_steps,
+                        "scratchpad": "",
+                    }
 
-                    for event in agent.stream({"messages": input_messages}):
-                        events.append(event)
-                        # Show progress
+                    # Stream events
+                    all_steps = []
+                    final_answer = ""
+                    tool_counts = {}
+
+                    for event in agent.stream(initial_state, {"recursion_limit": max_steps + 5}):
                         for node_name, node_output in event.items():
-                            if node_name == "agent":
-                                msg = node_output["messages"][-1]
-                                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                                    for tc in msg.tool_calls:
-                                        tool_name = tc["name"]
-                                        st.write(f"🔧 Calling tool: **{tool_name}**")
-                                        # Track tool usage
-                                        st.session_state.tool_usage_stats[tool_name] = (
-                                            st.session_state.tool_usage_stats.get(tool_name, 0) + 1
-                                        )
-                            elif node_name == "tools":
-                                st.write("📥 Got tool response")
+                            steps = node_output.get("reasoning_steps", [])
+                            all_steps.extend(steps)
+
+                            for step in steps:
+                                if step["type"] == "thought":
+                                    st.write(f"💭 **Thinking:** {step['content'][:100]}...")
+                                elif step["type"] == "action":
+                                    st.write(f"🔧 **Using tool:** {step['tool']}")
+                                elif step["type"] == "observation":
+                                    st.write(f"👁️ **Got result** ({len(step['content'])} chars)")
+
+                            if node_output.get("final_answer"):
+                                final_answer = node_output["final_answer"]
+                            if node_output.get("tool_calls_count"):
+                                tool_counts = node_output["tool_calls_count"]
 
                     status.update(label="✅ Agent finished!", state="complete")
 
-                    # Extract and display reasoning trace
-                    trace = extract_reasoning_trace(events)
+                    # Update global tool stats
+                    for tool_name, count in tool_counts.items():
+                        st.session_state.tool_usage_stats[tool_name] = (
+                            st.session_state.tool_usage_stats.get(tool_name, 0) + count
+                        )
 
-                    # Get final answer
-                    final_answer = ""
-                    for step in reversed(trace):
-                        if step["type"] == "answer":
-                            final_answer = step["content"]
-                            break
-
-                    if not final_answer:
-                        # Fallback: get last AI message from events
-                        for event in reversed(events):
-                            for node_name, node_output in event.items():
-                                if node_name == "agent":
-                                    msg = node_output["messages"][-1]
-                                    if hasattr(msg, "content") and msg.content and not (hasattr(msg, "tool_calls") and msg.tool_calls):
-                                        final_answer = msg.content
-                                        break
-                            if final_answer:
-                                break
-
+                    # Display final answer
                     if final_answer:
                         st.markdown(final_answer)
                     else:
-                        st.info("The agent processed your request but didn't produce a text response.")
+                        st.info("The agent processed your request but didn't produce a final answer.")
 
                     # Show reasoning trace
-                    if trace and any(s["type"] in ("thought", "action", "observation") for s in trace):
-                        with st.expander("🔍 View Reasoning Chain", expanded=True):
-                            display_reasoning_trace(trace)
+                    has_reasoning = any(s["type"] in ("thought", "action", "observation") for s in all_steps)
+                    if has_reasoning:
+                        with st.expander("🔍 View Full Reasoning Chain", expanded=True):
+                            display_reasoning_trace(all_steps)
 
-                    # Save to session state
+                    # Save to session
                     msg_idx = str(len(st.session_state.messages))
-                    st.session_state.reasoning_traces[msg_idx] = trace
+                    st.session_state.reasoning_traces[msg_idx] = all_steps
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": final_answer or "Agent processed the request.",
@@ -479,25 +396,26 @@ if prompt:
 
                 except Exception as e:
                     st.error(f"Agent error: {str(e)}")
-                    st.info("💡 **Tip:** Make sure the selected model supports tool calling. Try `llama3` or `mistral`.")
+                    import traceback
+                    st.code(traceback.format_exc(), language="python")
 
 
 # ═══════════════════════════════════════════
-# TOOL USAGE BREAKDOWN (bottom section)
+# TOOL USAGE BREAKDOWN
 # ═══════════════════════════════════════════
 
 if st.session_state.tool_usage_stats:
     st.markdown("---")
     st.markdown("### 📊 Tool Usage Breakdown")
-    cols = st.columns(len(st.session_state.tool_usage_stats))
+    cols = st.columns(min(len(st.session_state.tool_usage_stats), 6))
     for i, (tool_name, count) in enumerate(
         sorted(st.session_state.tool_usage_stats.items(), key=lambda x: x[1], reverse=True)
     ):
-        info = TOOL_REGISTRY.get(tool_name, {})
-        icon = info.get("icon", "🔧")
-        with cols[i]:
-            st.metric(
-                label=f"{icon} {tool_name}",
-                value=count,
-                delta=f"{count} calls",
-            )
+        # Find matching tool info
+        icon = "🔧"
+        for name, info in TOOL_REGISTRY.items():
+            if name.lower() in tool_name.lower() or tool_name.lower() in name.lower():
+                icon = info["icon"]
+                break
+        with cols[i % len(cols)]:
+            st.metric(label=f"{icon} {tool_name}", value=count, delta=f"{count} calls")

@@ -46,12 +46,14 @@ def create_rag_agent(model_name="llama3", vector_store=None):
         """Decide if we need to retrieve documents or can answer directly."""
         question = state["question"]
 
+        has_docs = vector_store is not None and vector_store.has_documents()
         prompt = f"""You are a routing agent. Analyze the user's question and decide the best approach.
+{"The knowledge base HAS documents uploaded. Prefer retrieval for any factual or knowledge question." if has_docs else "The knowledge base is empty."}
 
 Question: {question}
 
-If the question is about specific documents, facts, or requires detailed knowledge from uploaded documents, respond with: ROUTE: retrieve
-If the question is a general greeting, simple math, or common knowledge you can answer directly, respond with: ROUTE: direct
+ONLY respond with ROUTE: direct for simple greetings like "hello", "hi", "how are you".
+For ANY question asking about facts, topics, information, or knowledge, respond with: ROUTE: retrieve
 
 Respond with ONLY one line starting with ROUTE:"""
 

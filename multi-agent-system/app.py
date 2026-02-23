@@ -363,6 +363,7 @@ if run_button and task_input.strip():
             all_history = []
             step_count = 0
             agents_used = set()
+            final_output = ""
 
             for event in graph.stream(initial_state, {"recursion_limit": 25}):
                 for node_name, node_output in event.items():
@@ -381,6 +382,12 @@ if run_button and task_input.strip():
                     status_text.markdown(
                         f"**{profile['icon']} {profile['name']}** is working..."
                     )
+
+                    # Capture final output as it's produced
+                    if node_output.get("final_output"):
+                        final_output = node_output["final_output"]
+                    elif node_output.get("draft_output"):
+                        final_output = node_output["draft_output"]
 
                     # Log entry
                     history_entries = node_output.get("agent_history", [])
@@ -410,17 +417,6 @@ if run_button and task_input.strip():
             progress_bar.progress(1.0)
             status_text.markdown("**✅ All agents finished!**")
 
-            # Get final output from last event
-            final_output = ""
-            for event in graph.stream(initial_state, {"recursion_limit": 25}):
-                for node_name, node_output in event.items():
-                    if node_output.get("final_output"):
-                        final_output = node_output["final_output"]
-                    elif node_output.get("draft_output"):
-                        final_output = node_output["draft_output"]
-
-            # Rebuild graph and run to get final state
-            # Use the collected data
             if not final_output:
                 final_output = "The agent team processed your task. Check the activity log for details."
 

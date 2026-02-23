@@ -20,7 +20,7 @@ class VectorStoreManager:
     @property
     def embeddings(self):
         if self._embeddings is None:
-            from langchain_community.embeddings import HuggingFaceEmbeddings
+            from langchain_huggingface import HuggingFaceEmbeddings
             self._embeddings = HuggingFaceEmbeddings(
                 model_name="all-MiniLM-L6-v2",
                 model_kwargs={"device": "cpu"},
